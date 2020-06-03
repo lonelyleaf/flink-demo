@@ -1,36 +1,31 @@
 package com.github.lonely1eaf;
 
 import lombok.extern.slf4j.Slf4j;
+import org.apache.flink.api.common.functions.AggregateFunction;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.TimeCharacteristic;
-import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.streaming.api.windowing.assigners.ProcessingTimeSessionWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
-import org.apache.flink.streaming.api.windowing.windows.Window;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.OutputTag;
-
-import java.util.Timer;
-import java.util.TimerTask;
 
 /**
  * 模拟一个监控设备离线的业务，使用一个定时发送消息的timer来模拟报文的定时发送，
  * 然后会定时掉线（长时间不发送消息），来模拟网络离线
- *
- * https://ci.apache.org/projects/flink/flink-docs-release-1.10/dev/stream/operators/windows.html#processwindowfunction
+ * <p>
+ * https://ci.apache.org/projects/flink/flink-docs-release-1.10/dev/stream/operators/windows.html#processwindowfunction-with-incremental-aggregation
  */
 @Slf4j
-public class TimerJob {
+public class TimerJobWithIncrementalAggregation {
 
     private static final OutputTag<String> OUTPUT_TAG = new OutputTag<String>("clear-tag", TypeInformation.of(String.class));
 
@@ -46,7 +41,10 @@ public class TimerJob {
         final SingleOutputStreamOperator<String> streamOperator = see.addSource(new TimerSource())
                 .keyBy(value -> Long.valueOf(1))//把key写死，模拟单个设备
                 .window(ProcessingTimeSessionWindows.withGap(Time.seconds(5)))//使用seesion window，模拟5秒没收到消息就判断离线
-                .process(new CountWithTimeoutFunction());
+                //为了让上游每次发送的消息都触发计算，这里需要配置trigger
+                .trigger(new LongEveryTimeFireTrigger())
+                //这里会先触发聚合函数，然后给process function处理
+                .aggregate(new ReportAggFun(), new CountWithTimeoutFunction());
 
         //关闭窗口时，会发送side out到这个stream
         streamOperator.getSideOutput(OUTPUT_TAG)
@@ -62,6 +60,9 @@ public class TimerJob {
         see.execute("timer-job");
     }
 
+    /**
+     * 定时发送数据到下游
+     */
     private static class TimerSource implements SourceFunction<Long> {
         private volatile boolean isRunning = true;
 
@@ -85,37 +86,65 @@ public class TimerJob {
         }
     }
 
+
+    /**
+     * 聚合函数
+     */
+    private static class ReportAggFun implements AggregateFunction<Long, String, String> {
+
+        @Override
+        public String createAccumulator() {
+            return "start:";
+        }
+
+        @Override
+        public String add(Long value, String accumulator) {
+            return accumulator + "," + value;
+        }
+
+        @Override
+        public String getResult(String accumulator) {
+            return accumulator;
+        }
+
+        @Override
+        public String merge(String a, String b) {
+            if (a.length() > b.length()) {
+                return a;
+            } else {
+                return b;
+            }
+        }
+    }
+
     /**
      * The implementation of the ProcessFunction that maintains the count and timeouts
      */
     public static class CountWithTimeoutFunction
-            extends ProcessWindowFunction<Long, String, Long, TimeWindow> {
+            extends ProcessWindowFunction<String, String, Long, TimeWindow> {
 
         /**
          * The state that is maintained by this process function
          */
-        private ValueState<Long> state;
+        private ValueState<String> state;
 
         @Override
         public void open(Configuration parameters) throws Exception {
-            state = getRuntimeContext().getState(new ValueStateDescriptor<>("myState", Long.class));
+            state = getRuntimeContext().getState(new ValueStateDescriptor<>("myState", String.class));
         }
 
         @Override
-        public void process(Long aLong, Context context, Iterable<Long> elements, Collector<String> out) throws Exception {
-            for (Long element : elements) {
-                System.out.println("====循环中");
-                state.update(element);
-                out.collect("key:" + aLong + " element:" + element);
-            }
+        public void process(Long key, Context context,
+                            Iterable<String> elements, Collector<String> out) throws Exception {
+            final String next = elements.iterator().next();
+            state.update(next);
+            out.collect(next);
         }
 
         @Override
         public void clear(Context context) throws Exception {
             //clears触发时也是窗口关闭时，这里发送一个side output来发送设备离线的消息
-            super.clear(context);
-            state.clear();
-            System.out.println("====window state"+context.window().toString());
+            System.out.println("====window state" + context.window().toString());
             context.output(OUTPUT_TAG, "clear()");
         }
 
