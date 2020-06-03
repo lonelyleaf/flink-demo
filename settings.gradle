@@ -1,0 +1,3 @@
+rootProject.name = 'flink-demo'
+include ':flink-job'
+//include ':flink-job-scala'

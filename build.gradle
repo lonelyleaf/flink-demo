@@ -1,0 +1,64 @@
+buildscript {
+    //相当于maven的properties,这里是全局的变量
+    ext {
+        iotAivsDataCommonVersion = "0.31-SNAPSHOT"
+        jacksonVersion = "2.10.1"
+    }
+    //gradle插件的仓库
+    repositories {
+        maven { url "https://repo.spring.io/milestone" }
+        jcenter()
+        maven {
+            url "https://plugins.gradle.org/m2/"
+        }
+        maven { url "https://jitpack.io" }
+        mavenCentral()
+    }
+    //插件引用
+    dependencies {
+        //直接将jar打包为docker镜像，而不通过docker daemon
+        //classpath 'gradle.plugin.com.google.cloud.tools:jib-gradle-plugin:1.0.2'
+        classpath "io.freefair.gradle:lombok-plugin:4.1.5"
+
+        //flink job的jar要用
+        classpath "com.github.jengelman.gradle.plugins:shadow:5.1.0"
+    }
+}
+
+allprojects {
+    version = "0.1-SNAPSHOT"
+    group = 'com.cqhaorun'
+
+    tasks.withType(JavaCompile) {
+        options.encoding = "UTF-8"
+    }
+}
+
+//针对所有子项目的配置
+subprojects {
+    version = "${this.version}"
+
+    tasks.withType(JavaCompile) {
+        options.encoding = "UTF-8"
+    }
+    task printVersion {
+        doLast {
+            println project.version
+        }
+    }
+    task printName {
+        doLast {
+            println project.name
+        }
+    }
+
+    // maven仓库配置
+    repositories {
+        maven { url "https://repo.spring.io/milestone" }
+        jcenter()
+        maven { url "https://jitpack.io" }
+        mavenCentral()
+    }
+
+}
+
